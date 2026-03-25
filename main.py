@@ -44,8 +44,8 @@ from aiogram.types import ChatJoinRequest
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 # ─── CONFIG ──────────────────────────────────────────────────────────────────
-TOKEN        = os.environ.get("TOKEN", "")
-AI_API_KEY   = os.environ.get("AI_API_KEY", "")
+TOKEN = "8653795023:AAGHcRMyCJFDCfaIxheyc9iarL_TkGQ9uBk"
+AI_API_KEY = "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"
 OPENROUTER_URL   = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_MODEL = "google/gemini-2.0-flash-001"
 
