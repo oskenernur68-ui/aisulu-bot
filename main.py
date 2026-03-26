@@ -23,7 +23,7 @@ def keep_alive():
     t.start()
 
 async def self_ping_loop():
-    """Ping own Flask server every 4 min so Replit never idles the process."""
+    """Ping own Flask server every 4 min so Render never idles the process."""
     await asyncio.sleep(30)             # wait for Flask to be fully up
     while True:
         try:
@@ -42,12 +42,14 @@ from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import ChatJoinRequest
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+from google import genai
 
 # ─── CONFIG ──────────────────────────────────────────────────────────────────
 TOKEN = "8653795023:AAGHcRMyCJFDCfaIxheyc9iarL_TkGQ9uBk"
-AI_API_KEY ="AIzaSyA96MQTbsIp8qXVnmTB6Chk01kz6x9DIRA"
-OPENROUTER_URL   = "https://openrouter.ai/api/v1/chat/completions"
-OPENROUTER_MODEL = "google/gemini-2.0-flash-001"
+GEMINI_API_KEY = "AIzaSyDWQP3LwhjJpwcbKVvKXOamu0DKT_iMlWk"
+
+# Configure Gemini
+genai_client = genai.Client(api_key=GEMINI_API_KEY)
 
 ADMIN_ID     = 8158572095
 KASPI_NUMBER = "4400430232568623"
@@ -105,9 +107,6 @@ VIP_OBZOR = {
 }
 
 # ─── CHANNEL PREVIEW PHOTOS ──────────────────────────────────────────────────
-# Keys match CHANNELS keys. Each list = possible preview images (one picked randomly).
-# NOTE: These must be direct image URLs (ending in .jpg/.png).
-# ibb.co viewer links won't work — replace with i.ibb.co direct links when available.
 CHANNEL_PHOTOS = {
     "ch_1": ["https://i.ibb.co/W42RmJkB/image.jpg"],
     "ch_2": ["https://i.ibb.co/xSxWLg84/image.jpg", "https://i.ibb.co/3YT9nLyh/image.jpg"],
@@ -142,15 +141,16 @@ SYSTEM_PROMPT = (
     "4. Психологиялық манипуляция: 'Бәрі алып қойды', 'Бүгін соңғы орын', 'Өкінесің кейін'.\n"
     "5. Техникалық сұрақтарға жауап берме — тақырыпты ауыстыр.\n"
     "6. Ақша туралы: VIP ОБЗОР 290тг, 1 канал жеке бағасы, 8 канал 3333тг.\n"
-    "7. Мақсатың — клиент пакет алсын."
+    "7. Мақсатың — клиент пакет алсын.\n"
+    "8. Егер киім, ATAKSHOP туралы сұраса: 'Жаным, ATAKSHOP-та әдемі киімдер бар, бірақ негізгі мақсатым — сені осы VIP каналдарға кіргізу 😘 Олар рахаттан-ай!'"
 )
 
 # ─── STATE ───────────────────────────────────────────────────────────────────
 bot            = Bot(token=TOKEN)
 dp             = Dispatcher()
 user_data      = {}        # {user_id: {lang, stage, pack, channel, channel_name, channel_price, history}}
-paid_users     = set()    # completed full payment (main + commission)
-vip_obzor_users = set()   # paid for VIP ОБЗОР
+paid_users     = set()     # completed full payment (main + commission)
+vip_obzor_users = set()    # paid for VIP ОБЗОР
 referral_data  = {}        # {referrer_id: {invited_user_ids}}
 
 REFERRAL_GOAL         = 10
@@ -327,10 +327,10 @@ async def show_channels(cb: types.CallbackQuery):
     # Step 1: Clean text list — NO URLs, just names with beautiful formatting
     LIST_TEXT = (
         "🔥 🌸 <b><u>DETSKIY POLNYY VIDEOLAR</u></b> 🌸 🔥\n"
-        "🔥 💋 <b><u>Taza qazaqshalpha shkolniktep</u></b> 💖 🔥\n"
+        "🔥 💋 <b><u>Taza qazaqsha shkolnikter</u></b> 💖 🔥\n"
         "🔥 ✨ <b><u>ҚЫЗДАРДЫҢ НӨМІРІ ЖӘНЕ МЕКЕН-ЖАЙЫ (KZ)</u></b> ✨ 🔥\n"
         "🔥 📺 <b><u>VIP KANAL</u></b> 🔥\n"
-        "🔥 💋 <b><u>Sен izdegeң qazaqsha кaнaldar</u></b> 💋 🔥\n"
+        "🔥 💋 <b><u>Sen izdegen qazaqsha kanaldar</u></b> 💋 🔥\n"
         "🔥 📺 <b><u>VIDEO KZ</u></b> 🔥\n"
         "🔥 😍 <b><u>BLOGERLER SLIV</u></b> 😍 🔥\n"
         "🔥 🔥 <b><u>V I P 2</u></b> 🔥 🔥\n\n"
@@ -338,32 +338,30 @@ async def show_channels(cb: types.CallbackQuery):
     )
     await cb.message.edit_text(LIST_TEXT, parse_mode="HTML", reply_markup=get_main_kb(lang))
 
-    # Step 2: 8 separate photos — each with its name as caption, no URLs in caption
+    # Step 2: Send preview photos with captions
     CHANNEL_CAPTIONS = {
         "ch_1": "🔥 🌸 <b><u>DETSKIY POLNYY VIDEOLAR</u></b> 🌸 🔥",
-        "ch_2": "🔥 💋 <b><u>Taza qazaqshalpha shkolniktep</u></b> 💖 🔥",
+        "ch_2": "🔥 💋 <b><u>Taza qazaqsha shkolnikter</u></b> 💖 🔥",
         "ch_3": "🔥 ✨ <b><u>ҚЫЗДАРДЫҢ НӨМІРІ ЖӘНЕ МЕКЕН-ЖАЙЫ (KZ)</u></b> ✨ 🔥",
         "ch_4": "🔥 📺 <b><u>VIP KANAL</u></b> 🔥",
-        "ch_5": "🔥 💋 <b><u>Sен izdegeң qazaqsha кaнaldar</u></b> 💋 🔥",
+        "ch_5": "🔥 💋 <b><u>Sen izdegen qazaqsha kanaldar</u></b> 💋 🔥",
         "ch_6": "🔥 📺 <b><u>VIDEO KZ</u></b> 🔥",
         "ch_7": "🔥 😍 <b><u>BLOGERLER SLIV</u></b> 😍 🔥",
         "ch_8": "🔥 🔥 <b><u>V I P 2</u></b> 🔥 🔥",
     }
 
     for ch_key, caption in CHANNEL_CAPTIONS.items():
-        
         try:
             await bot.send_message(
                 user_id,
-                
                 text=caption,
                 parse_mode="HTML",
             )
             await asyncio.sleep(0.4)   # small pause — avoids Telegram rate-limit
         except Exception as e:
-         print(f"Error: {e}")
-            
-            
+            print(f"[PREVIEW] Error sending preview for {ch_key}: {e}")
+
+
 # ─── BUY: 8-CHANNEL PACK ─────────────────────────────────────────────────────
 @dp.callback_query(F.data == "buy_pack_8")
 async def buy_pack_8(cb: types.CallbackQuery):
@@ -518,7 +516,7 @@ async def handle_receipt(message: types.Message):
 # VIP ОБЗОР confirmed
 @dp.callback_query(F.data.startswith("confvip_"))
 async def conf_vip(cb: types.CallbackQuery):
-    await cb.answer()                    # ← instant: removes spinner immediately
+    await cb.answer()
     user_id = int(cb.data.split("_")[1])
     lang = ud(user_id).get('lang', 'kz')
     ud(user_id)['stage'] = 'done'
@@ -537,7 +535,7 @@ async def conf_vip(cb: types.CallbackQuery):
 # Main payment confirmed → send links + ask commission
 @dp.callback_query(F.data.startswith("conf1_"))
 async def conf1(cb: types.CallbackQuery):
-    await cb.answer()                    # ← instant
+    await cb.answer()
     user_id = int(cb.data.split("_")[1])
     d    = ud(user_id)
     lang = d.get('lang', 'kz')
@@ -580,7 +578,7 @@ async def conf1(cb: types.CallbackQuery):
 # Commission confirmed → fully paid
 @dp.callback_query(F.data.startswith("conf2_"))
 async def conf2(cb: types.CallbackQuery):
-    await cb.answer()                    # ← instant
+    await cb.answer()
     user_id = int(cb.data.split("_")[1])
     lang = ud(user_id).get('lang', 'kz')
     ud(user_id)['stage'] = 'done'
@@ -598,7 +596,7 @@ async def conf2(cb: types.CallbackQuery):
 # Reject
 @dp.callback_query(F.data.startswith("rej_"))
 async def rej(cb: types.CallbackQuery):
-    await cb.answer()                    # ← instant
+    await cb.answer()
     user_id = int(cb.data.split("_")[1])
     lang = ud(user_id).get('lang', 'kz')
     msg = ("❌ Кешіріңіз, төлеміңіз расталмады. Қайта жіберіңіз."
@@ -614,7 +612,7 @@ async def rej(cb: types.CallbackQuery):
 # Discount offer (admin reply)
 @dp.callback_query(F.data.startswith("offeryes_"))
 async def offer_yes(cb: types.CallbackQuery):
-    await cb.answer()                    # ← instant
+    await cb.answer()
     user_id = int(cb.data.split("_")[1])
     lang = ud(user_id).get('lang', 'kz')
     if lang == 'kz':
@@ -626,7 +624,7 @@ async def offer_yes(cb: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("offerno_"))
 async def offer_no(cb: types.CallbackQuery):
-    await cb.answer()                    # ← instant
+    await cb.answer()
     user_id = int(cb.data.split("_")[1])
     lang = ud(user_id).get('lang', 'kz')
     if lang == 'kz':
@@ -651,40 +649,66 @@ async def handle_join_request(request: ChatJoinRequest):
         print(f"[JOIN] ⛔ Not paid — {user_id} in chat {chat_id}")
 
 
-# ─── AI CHAT ──────────────────────────────────────────────────────────────────
-async def call_ai(system_prompt: str, user_text: str, history: list) -> str | None:
-    messages = [{"role": "system", "content": system_prompt}]
-    messages.extend(history)
-    messages.append({"role": "user", "content": user_text})
-    headers = {
-        "Authorization": f"Bearer {AI_API_KEY}",
-        "Content-Type":  "application/json",
-        "HTTP-Referer":  "https://aisulu-bot.replit.app",
-        "X-Title":       "Aisulu Bot",
-    }
-    payload = {
-        "model":      OPENROUTER_MODEL,
-        "messages":   messages,
-        "safe_prompt": False,
-        "transforms":  [],
-    }
+# ─── AI CHAT (GEMINI) ─────────────────────────────────────────────────────────
+async def call_gemini(system_prompt: str, user_text: str, history: list) -> str | None:
+    """
+    Call Google Gemini API with proper async handling and error management.
+    Returns AI response or None on error.
+    """
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(OPENROUTER_URL, headers=headers, json=payload,
-                                    timeout=aiohttp.ClientTimeout(total=30)) as resp:
-                raw = await resp.json()
-                if resp.status == 200:
-                    return raw["choices"][0]["message"]["content"]
-                print(f"[AI ERROR] {resp.status}: {raw}")
+        # Build conversation history for Gemini
+        contents = []
+        
+        # Add system prompt as first user message
+        contents.append({
+            "role": "user",
+            "parts": [{"text": system_prompt}]
+        })
+        contents.append({
+            "role": "model",
+            "parts": [{"text": "Түсінікті, мен Айсұлумын! 😘"}]
+        })
+        
+        # Add conversation history
+        for msg in history:
+            role = "user" if msg["role"] == "user" else "model"
+            contents.append({
+                "role": role,
+                "parts": [{"text": msg["content"]}]
+            })
+        
+        # Add current user message
+        contents.append({
+            "role": "user",
+            "parts": [{"text": user_text}]
+        })
+        
+        # Generate response asynchronously
+        response = await asyncio.to_thread(
+            genai_client.models.generate_content,
+            model='gemini-1.5-flash',
+            contents=contents,
+            config={
+                'temperature': 0.9,
+                'top_p': 0.95,
+                'top_k': 40,
+                'max_output_tokens': 200,
+            }
+        )
+        
+        return response.text if response and hasattr(response, 'text') else None
+        
     except Exception as e:
-        print(f"[AI EXCEPTION] {e}")
-    return None
+        print(f"[GEMINI ERROR] {type(e).__name__}: {e}")
+        return None
 
 
 @dp.message()
 async def ai_handler(message: types.Message):
+    # Ignore admin messages and non-text messages
     if message.from_user.id == ADMIN_ID or not message.text:
         return
+    
     user_id  = message.from_user.id
     d        = ud(user_id)
     lang     = d.get('lang', 'kz')
@@ -693,7 +717,7 @@ async def ai_handler(message: types.Message):
     history  = d.setdefault('history', [])
     reply_kb = get_main_kb(lang)
 
-    # Channel content triggers
+    # Channel content triggers — show quick info without AI
     triggers = ["не бар", "не кіреді", "қандай", "кандай", "ішінде", "ышынде",
                 "что внутри", "какие каналы", "что входит", "внутри", "нелер бар"]
     if stage not in ('wait_2', 'done', 'wait_vip') and any(w in message.text.lower() for w in triggers):
@@ -703,6 +727,7 @@ async def ai_handler(message: types.Message):
         await message.answer(text, reply_markup=reply_kb)
         return
 
+    # Build dynamic context based on user stage
     comm = "1 777" if pack == '8_kanal' else "1 555"
     lang_rule = ("ҚАЗАҚША сөйле. 'Жаным', 'Күнім' де." if lang == 'kz'
                  else "Говори строго НА РУССКОМ. 'Зай', 'Милый' де.")
@@ -730,15 +755,32 @@ async def ai_handler(message: types.Message):
                    if lang == 'kz' else
                    "Про второй платеж — скажи что нет.")
 
-    full_prompt = f"{SYSTEM_PROMPT} {lang_rule}\nМАЎЫЗДЫ: {dynamic}"
-    response = await call_ai(full_prompt, message.text, history)
+    full_prompt = f"{SYSTEM_PROMPT} {lang_rule}\nМАҰЫЗДЫ: {dynamic}"
+    
+    # ✅ FIX: Send "Thinking..." BEFORE calling AI
+    thinking_msg = await message.answer(
+        "Ойланып жатырмын..." if lang == 'kz' else "Думаю..."
+    )
+    
+    # Call Gemini API
+    response = await call_gemini(full_prompt, message.text, history)
+    
+    # Delete "Thinking..." message
+    try:
+        await thinking_msg.delete()
+    except Exception:
+        pass
 
     if response:
+        # Update conversation history
         history.append({"role": "user",      "content": message.text})
         history.append({"role": "assistant", "content": response})
+        
+        # Keep only last 10 messages to avoid token limits
         if len(history) > 10:
             d['history'] = history[-10:]
 
+        # Check if admin approval needed for discount
         if "[АДМИН]" in response:
             response = response.replace("[АДМИН]", "").strip()
             akb = InlineKeyboardBuilder()
@@ -747,29 +789,34 @@ async def ai_handler(message: types.Message):
             await bot.send_message(ADMIN_ID,
                                    f"🔔 СКИДКА СҰРАУ\n👤 ID: {user_id}\n💬 {message.text}",
                                    reply_markup=akb.as_markup())
+        
         await message.answer(response, reply_markup=reply_kb)
     else:
+        # Fallback if AI fails
         fallback = ("Жаным, сәл күте тұрыңыз... 🥰" if lang == 'kz' else "Зай, секунду... 🥰")
         await message.answer(fallback, reply_markup=reply_kb)
 
 
 # ─── MAIN ────────────────────────────────────────────────────────────────────
 async def main():
-    webview = os.environ.get("REPLIT_DOMAINS", "localhost:8000").split(",")[0].strip()
-    uptime_url = f"https://{webview}/"
     print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     print("  АЙСҰЛУ БОТ ІСКЕ ҚОСЫЛДЫ ✅")
-    print(f"  Flask keep-alive: http://0.0.0.0:8000/")
-    print(f"  UptimeRobot URL : {uptime_url}")
+    print("  Flask keep-alive: http://0.0.0.0:8000/")
+    print("  Gemini Model: gemini-1.5-flash")
     print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    asyncio.create_task(self_ping_loop())   # keep-alive heartbeat (never sleeps)
+    
+    # Start self-ping loop for keep-alive
+    asyncio.create_task(self_ping_loop())
+    
+    # Start bot polling
     await dp.start_polling(bot)
+
 
 if __name__ == "__main__":
     keep_alive()
     try:
         asyncio.run(main())
-    except (KeyboardInterrupt,          SystemExit):
+    except (KeyboardInterrupt, SystemExit):
         print("Бот тоқтатылды!")
     except Exception as e:
         print(f"Қате шықты: {e}")
