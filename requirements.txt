@@ -1,5 +1,5 @@
 aiogram
-flask
-asyncio
-requests
 google-generativeai
+flask
+requests
+aiohttp
