@@ -42,7 +42,7 @@ from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import ChatJoinRequest
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from google import genai
+import google.generativeai as genai
 
 # ─── CONFIG ──────────────────────────────────────────────────────────────────
 TOKEN = "8653795023:AAGHcRMyCJFDCfaIxheyc9iarL_TkGQ9uBk"
