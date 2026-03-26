@@ -49,7 +49,7 @@ TOKEN = "8653795023:AAGHcRMyCJFDCfaIxheyc9iarL_TkGQ9uBk"
 GEMINI_API_KEY = "AIzaSyDWQP3LwhjJpwcbKVvKXOamu0DKT_iMlWk"
 
 # Configure Gemini
-genai_client = genai.Client(api_key=GEMINI_API_KEY)
+genai.configure(api_key=GEMINI_API_KEY)
 
 ADMIN_ID     = 8158572095
 KASPI_NUMBER = "4400430232568623"
