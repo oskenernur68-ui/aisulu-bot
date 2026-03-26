@@ -45,7 +45,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 # ─── CONFIG ──────────────────────────────────────────────────────────────────
 TOKEN = "8653795023:AAGHcRMyCJFDCfaIxheyc9iarL_TkGQ9uBk"
-AI_API_KEY ="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"
+AI_API_KEY ="AIzaSyA96MQTbsIp8qXVnmTB6Chk01kz6x9DIRA"
 OPENROUTER_URL   = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_MODEL = "google/gemini-2.0-flash-001"
 
