@@ -154,7 +154,7 @@ vip_obzor_users = set()   # paid for VIP ОБЗОР
 referral_data  = {}        # {referrer_id: {invited_user_ids}}
 
 REFERRAL_GOAL         = 10
-REFERRAL_FREE_CHANNEL = CHANNELS["ch_1"]["link"]
+REFERRAL_FREE_CHANNEL = "https://t.me/+7rx0D1m0XvszMDY6"
 
 
 # ─── KEYBOARDS ───────────────────────────────────────────────────────────────
