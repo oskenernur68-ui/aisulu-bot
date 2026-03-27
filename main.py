@@ -1277,14 +1277,14 @@ async def ai_handler(message: types.Message):
         if len(history) > 15:
             d['history'] = history[-15:]
         
-        # Check if admin approval needed for discount
-        if "[АДМИН]" in response:
+       # Check if admin approval needed for discount
+    if "[АДМИН]" in response:
             response = response.replace("[АДМИН]", "").strip()
             akb = InlineKeyboardBuilder()
             akb.add(types.InlineKeyboardButton(text="✅ Иә / Да", callback_data=f"offeryes_{user_id}"))
             akb.add(types.InlineKeyboardButton(text="❌ Жоқ / Нет", callback_data=f"offerno_{user_id}"))
             
-           await bot.send_message(
+            await bot.send_message(
                 ADMIN_ID,
                 f"🔔 *СКИДКА СҰРАУ / ПРОСЬБА СКИДКИ*\n\n"
                 f"👤 ID: `{user_id}`\n"
@@ -1305,11 +1305,6 @@ async def ai_handler(message: types.Message):
             logger.error(f"[AI] Error sending response: {e}")
             fallback = get_fallback_response(lang)
             await message.answer(fallback, reply_markup=reply_kb)
-    else:
-        # Fallback if AI fails
-        logger.warning(f"[AI] AI failed for user {user_id}, using fallback")
-        fallback = get_fallback_response(lang)
-        await message.answer(fallback, reply_markup=reply_kb)
 
 # ─── ADDITIONAL COMMANDS AND HANDLERS ─────────────────────────────────────────
 
