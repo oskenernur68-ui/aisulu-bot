@@ -1284,7 +1284,7 @@ async def ai_handler(message: types.Message):
             akb.add(types.InlineKeyboardButton(text="✅ Иә / Да", callback_data=f"offeryes_{user_id}"))
             akb.add(types.InlineKeyboardButton(text="❌ Жоқ / Нет", callback_data=f"offerno_{user_id}"))
             
-            await bot.send_message(
+           await bot.send_message(
                 ADMIN_ID,
                 f"🔔 *СКИДКА СҰРАУ / ПРОСЬБА СКИДКИ*\n\n"
                 f"👤 ID: `{user_id}`\n"
@@ -1294,7 +1294,8 @@ async def ai_handler(message: types.Message):
                 f"📊 Этап: {stage}",
                 parse_mode="Markdown",
                 reply_markup=akb.as_markup()
-            )            logger.info(f"[ADMIN] Discount request from user {user_id}")
+            )
+            logger.info(f"[ADMIN] Discount request from user {user_id}")
         
         # Send AI response
         try:
