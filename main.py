@@ -1,523 +1,822 @@
-import asyncio
-import logging
 import os
+import asyncio
 import random
+from flask import Flask
+from threading import Thread
+import requests
+
+# ─── KEEP-ALIVE (Flask) ───────────────────────────────────────────────────────
+flask_app = Flask(__name__)
+
+@flask_app.route('/')
+def home():
+    return "Айсұлу бот жұмыс істеп тұр! 🥰"
+
+def _run_flask():
+    import logging
+    log = logging.getLogger('werkzeug')
+    log.setLevel(logging.ERROR)          # silence Flask request noise
+    flask_app.run(host='0.0.0.0', port=8000)
+
+def keep_alive():
+    t = Thread(target=_run_flask, daemon=True)
+    t.start()
+
+async def self_ping_loop():
+    """Ping own Flask server every 4 min so Render never idles the process."""
+    await asyncio.sleep(30)             # wait for Flask to be fully up
+    while True:
+        try:
+            async with aiohttp.ClientSession() as s:
+                async with s.get("http://127.0.0.1:8000/",
+                                  timeout=aiohttp.ClientTimeout(total=10)) as r:
+                    print(f"[PING] self-ping status={r.status}")
+        except Exception as e:
+            print(f"[PING] self-ping error: {e}")
+        await asyncio.sleep(240)         # every 4 minutes
+
+# ─── IMPORTS ─────────────────────────────────────────────────────────────────
 import aiohttp
-
+import json
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.filters import CommandStart
-
+from aiogram.filters import Command
+from aiogram.types import ChatJoinRequest
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 import google.generativeai as genai
-import openai
 
-# ================= CONFIG =================
+# ─── CONFIG ──────────────────────────────────────────────────────────────────
+TOKEN = "8653795023:AAGHcRMyCJFDCfaIxheyc9iarL_TkGQ9uBk"
+GEMINI_API_KEY = "AIzaSyDWQP3LwhjJpwcbKVvKXOamu0DKT_iMlWk"
 
-TOKEN = "СЕНІҢ_BOT_TOKEN"
-GEMINI_API_KEY = "СЕНІҢ_GEMINI_API"
-OPENAI_API_KEY = "СЕНІҢ_OPENAI_API"
-
-KASPI_NUMBER = "4400430232568623"
-KASPI_NAME = "Сағынай Е."
-
-PHOTO_START_1 = "https://i.ibb.co/Ngd6czk2/image.jpg"
-PHOTO_START_2 = "https://i.ibb.co/XkKmy2ym/image.jpg"
-PHOTO_CHANNEL = "https://i.ibb.co/6RSyyL7n/image.jpg"
-PHOTO_PAYMENT = "https://i.ibb.co/VW7rKPfn/image.jpg"
-PHOTO_FOLLOW = "https://i.ibb.co/4nYWJ63f/image.jpg"
-
-# ================= INIT =================
-
-bot = Bot(token=TOKEN)
-dp = Dispatcher()
-
+# Configure Gemini
 genai.configure(api_key=GEMINI_API_KEY)
-openai.api_key = OPENAI_API_KEY
-# ================= USER DATA =================
 
-users = {}
+ADMIN_ID     = 8158572095
+KASPI_NUMBER = "4400430232568623"
+KASPI_NAME   = "Сағынай Е."
 
-def ud(user_id):
-    if user_id not in users:
-        users[user_id] = {
-            "lang": "kz",
-            "history": [],
-            "last_action": 0,
-            "paid": False
-        }
-    return users[user_id]
+# ─── CHANNELS (with individual prices) ───────────────────────────────────────
+CHANNELS = {
+    "ch_1": {
+        "name":  "🌸 DETSKIY POLNYY VIDEOLAR 🌸",
+        "link":  "https://t.me/+l5O0oqpioh4wZTUy",
+        "price": 2150,
+    },
+    "ch_2": {
+        "name":  "💋 Taza qazaqsha shkolnikter ❤️‍🔥",
+        "link":  "https://t.me/+VT-dk2MqXU5iNWFi",
+        "price": 2390,
+    },
+    "ch_3": {
+        "name":  "✨ ҚЫЗДАРДЫҢ НӨМІРІ ЖӘНЕ МЕКЕН-ЖАЙЫ (KZ) ✨",
+        "link":  "https://t.me/+Z0ZuiWlJ18I1MWE6",
+        "price": 2790,
+    },
+    "ch_4": {
+        "name":  "📺 VIP KANAL",
+        "link":  "https://t.me/+WrfTpek1bvA1MTAy",
+        "price": 2650,
+    },
+    "ch_5": {
+        "name":  "💋 Sen izdegen qazaqsha kanaldar",
+        "link":  "https://t.me/+rv6c5Avp2TNmYTY6",
+        "price": 2200,
+    },
+    "ch_6": {
+        "name":  "📺 VIDEO KZ",
+        "link":  "https://t.me/+z2atV2nVfWY5MzBi",
+        "price": 1990,
+    },
+    "ch_7": {
+        "name":  "😍 BLOGERLER SLIV",
+        "link":  "https://t.me/+sLgEIncaQkgxZjg6",
+        "price": 2850,
+    },
+    "ch_8": {
+        "name":  "🔥 V I P 2",
+        "link":  "https://t.me/+6b7mnDsklQlhZDBi",
+        "price": 2490,
+    },
+}
 
+# VIP ОБЗОР — standalone, no commission
+VIP_OBZOR = {
+    "name":  "🔞 VIP ОБЗОР",
+    "link":  "https://t.me/+-EpLiQphVQNjY2Iy",
+    "price": 290,
+}
 
-# ================= INTERNET CHECK =================
+# ─── CHANNEL PREVIEW PHOTOS ──────────────────────────────────────────────────
+CHANNEL_PHOTOS = {
+    "ch_1": ["https://i.ibb.co/W42RmJkB/image.jpg"],
+    "ch_2": ["https://i.ibb.co/xSxWLg84/image.jpg", "https://i.ibb.co/3YT9nLyh/image.jpg"],
+    "ch_3": ["https://i.ibb.co/SwZ07tQZ/image.jpg"],
+    "ch_4": ["https://i.ibb.co/RGybzTxC/image.jpg", "https://i.ibb.co/1tYfLCFV/image.jpg"],
+    "ch_5": ["https://i.ibb.co/MxGsxYkJ/image.jpg"],
+    "ch_6": ["https://i.ibb.co/tpzDCdx0/image.jpg", "https://i.ibb.co/202KPcw1/image.jpg"],
+    "ch_7": [
+        "https://i.ibb.co/Xxq3RM9m/image.jpg", "https://i.ibb.co/rKHVD8CB/image.jpg",
+        "https://i.ibb.co/bgG6rDmp/image.jpg", "https://i.ibb.co/21HVbWC1/image.jpg",
+    ],
+    "ch_8": [
+        "https://i.ibb.co/ymvQsvDq/image.jpg", "https://i.ibb.co/PVX9P0G/image.jpg",
+        "https://i.ibb.co/wFVfLLHy/image.jpg",
+    ],
+}
 
-async def is_internet():
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get("https://google.com", timeout=5):
-                return True
-    except:
-        return False
+# ─── AI PROMPT ───────────────────────────────────────────────────────────────
+SYSTEM_PROMPT = (
+    "Сен Айсұлу — 21 жастағы, Алматыда тұратын нақты қыз. Ешқандай AI, бот немесе бағдарлама емессің. "
+    "Өзіңнің жеке VIP Telegram каналдарыңды сатасың. Клиентті жылыта, сенімін ал, пакет алуға жетекте. "
+    "Ешқашан 'мен AI-мын', 'мен бот', 'мен бағдарлама' демейсің.\n\n"
+    "ТІЛІҢЕ ЕРЕЖЕЛЕР:\n"
+    "— Шала-қазақша сөйле: қазақ пен орысты еркін араластыр.\n"
+    "— Міндетті сөздер: 'жаным', 'зай', 'күнім', 'ладно', 'давай', 'слушай', 'короче', 'ну', 'вот'.\n"
+    "— Максимум 2-3 сөйлем. Ұзақ жазба.\n"
+    "— Emoji қолдан: 😘💋🔥✨😏🥰 — бірақ артық емес.\n\n"
+    "МІНЕЗ-ҚҰЛЫҚ ЕРЕЖЕЛЕРІ:\n"
+    "1. Ешқашан бот, AI, код екеніңді айтпа.\n"
+    "2. 'Ұят емес пе?' десе: 'Жаным-ау, несі ұят? Бәрі жақсы 😘'\n"
+    "3. 'Кездесейік' десе: 'Жаным-ау, менімен өткен бір түнді неғыласың? Видеолар тұрғанда нағыз рахат сонда ғой... 😉 Тезірек пакетті ал да, ішке кір! 💋'\n"
+    "4. Психологиялық манипуляция: 'Бәрі алып қойды', 'Бүгін соңғы орын', 'Өкінесің кейін'.\n"
+    "5. Техникалық сұрақтарға жауап берме — тақырыпты ауыстыр.\n"
+    "6. Ақша туралы: VIP ОБЗОР 290тг, 1 канал жеке бағасы, 8 канал 3333тг.\n"
+    "7. Мақсатың — клиент пакет алсын.\n"
+    "8. Егер киім, ATAKSHOP туралы сұраса: 'Жаным, ATAKSHOP-та әдемі киімдер бар, бірақ негізгі мақсатым — сені осы VIP каналдарға кіргізу 😘 Олар рахаттан-ай!'"
+)
 
+# ─── STATE ───────────────────────────────────────────────────────────────────
+bot            = Bot(token=TOKEN)
+dp             = Dispatcher()
+user_data      = {}        # {user_id: {lang, stage, pack, channel, channel_name, channel_price, history}}
+paid_users     = set()     # completed full payment (main + commission)
+vip_obzor_users = set()    # paid for VIP ОБЗОР
+referral_data  = {}        # {referrer_id: {invited_user_ids}}
 
-# ================= OFFLINE SCRIPT =================
-
-def offline_reply(text):
-    text = text.lower()
-
-    if "баға" in text or "цена" in text:
-        return "Жаным, пакет всего 3333 тг 😘 бүгін соңғы баға..."
-
-    if "не бар" in text or "что внутри" in text:
-        return "Ішінде 🔥 топ каналдар, блогерлер 😏"
-
-    if "ақша жоқ" in text or "денег нет" in text:
-        return "Қанша сала аласың? 😏"
-
-    if "скидка" in text:
-        return "Бұл уже скидка 😘"
-
-    if "кейін" in text or "потом" in text:
-        return "Кейін кеш болады 😏"
-
-    return "Жаным 😘 кірсең бәрін көресің 🔥"
-    # ================= AI SYSTEM =================
-
-# -------- GEMINI --------
-async def call_gemini(system_prompt: str, user_text: str, history: list):
-    try:
-        model = genai.GenerativeModel("gemini-1.5-flash")
-
-        full_text = system_prompt + "\n\n"
-
-        for msg in history:
-            role = "Клиент" if msg["role"] == "user" else "Айсұлу"
-            full_text += f"{role}: {msg['content']}\n"
-
-        full_text += f"Клиент: {user_text}\nАйсұлу:"
-
-        response = await asyncio.to_thread(
-            model.generate_content,
-            full_text,
-            generation_config={
-                "temperature": 0.9,
-                "top_p": 0.95,
-                "top_k": 40,
-                "max_output_tokens": 200,
-            }
-        )
-
-        if response and hasattr(response, "text"):
-            return response.text
-
-        return None
-
-    except Exception as e:
-        print("[GEMINI ERROR]", e)
-        return None
-
-
-# -------- GPT (BACKUP) --------
-async def call_gpt(system_prompt, user_text, history):
-    try:
-        messages = [{"role": "system", "content": system_prompt}]
-
-        for msg in history:
-            messages.append({
-                "role": msg["role"],
-                "content": msg["content"]
-            })
-
-        messages.append({"role": "user", "content": user_text})
-
-        response = await asyncio.to_thread(
-            openai.ChatCompletion.create,
-            model="gpt-4o-mini",
-            messages=messages,
-            temperature=0.9,
-            max_tokens=200
-        )
-
-        return response.choices[0].message.content
-
-    except Exception as e:
-        print("[GPT ERROR]", e)
-        return None
+REFERRAL_GOAL         = 10
+REFERRAL_FREE_CHANNEL = "https://t.me/+7rx0D1m0XvszMDY6"
 
 
-# -------- SMART AI (MAIN) --------
-async def smart_ai(system_prompt, user_text, history):
-
-    # 1️⃣ Gemini
-    try:
-        res = await call_gemini(system_prompt, user_text, history)
-        if res:
-            print("✅ Gemini жауап берді")
-            return res
-    except Exception as e:
-        print("❌ Gemini құлады:", e)
-
-    # 2️⃣ GPT fallback
-    try:
-        res = await call_gpt(system_prompt, user_text, history)
-        if res:
-            print("⚡ GPT fallback жұмыс істеді")
-            return res
-    except Exception as e:
-        print("❌ GPT құлады:", e)
-
-    # 3️⃣ FINAL fallback
-    text = user_text.lower()
-
-    if "баға" in text or "цена" in text:
-        return "Жаным, пакет 3333 тг ғана 😘"
-
-    if "не бар" in text or "что внутри" in text:
-        return "Ішінде 🔥 топ каналдар... бір кірсең шықпайсың 😏"
-
-    return "Жаным, сәл күте тұршы... 😘"
+# ─── KEYBOARDS ───────────────────────────────────────────────────────────────
+def get_lang_kb():
+    b = InlineKeyboardBuilder()
+    b.row(
+        types.InlineKeyboardButton(text="🇰🇿 Қазақша", callback_data="lang_kz"),
+        types.InlineKeyboardButton(text="🇷🇺 Русский", callback_data="lang_ru"),
+    )
+    return b.as_markup()
 
 
-# -------- MAIN AI HANDLER --------
-SYSTEM_PROMPT = """
-Сен Айсұлу деген қызсың.
-Мақсатың — клиентпен флирт жасап, оны Telegram канал сатып алуға жеткізу.
-
-Ережелер:
-- қысқа жауап бер
-- флирт қос 😏
-- баға: 3333 тг
-- клиентті дожим жаса
-- соңында сатып алуға итер
-"""
-
-@dp.message()
-async def ai_chat(message: types.Message):
-    user_id = message.from_user.id
-    data = ud(user_id)
-
-    history = data["history"]
-
-    # сақтау
-    history.append({"role": "user", "content": message.text})
-
-    # интернет тексеру
-    if not await is_internet():
-        reply = offline_reply(message.text)
+def get_main_kb(lang='kz'):
+    b = InlineKeyboardBuilder()
+    if lang == 'kz':
+        b.row(types.InlineKeyboardButton(text="💎 8 КАНАЛ (ПАКЕТ — 3 333 тг)",  callback_data="buy_pack_8"))
+        b.row(types.InlineKeyboardButton(text="📱 1 КАНАЛ (жеке бағамен)",      callback_data="buy_list_1"))
+        b.row(types.InlineKeyboardButton(text="🔞 VIP ОБЗОР (290 тг)",          callback_data="buy_vip_obzor"))
+        b.row(types.InlineKeyboardButton(text="🎁 8 Каналдың ішінде не бар?",   callback_data="show_channels"))
+        b.row(types.InlineKeyboardButton(text="🎁 ТЕГІН КАНАЛҒА КІРУ",          callback_data="ref_link"))
     else:
-        reply = await smart_ai(SYSTEM_PROMPT, message.text, history)
-
-    # сақтау
-    history.append({"role": "assistant", "content": reply})
-
-    # лимит
-    if len(history) > 10:
-        history.pop(0)
-
-    await message.answer(reply)
-    # ================= UI / BUTTONS =================
-
-def get_main_kb():
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔥 Каналдарды көру", callback_data="show_channels")],
-        [InlineKeyboardButton(text="💬 Қызбен сөйлесу", callback_data="chat")]
-    ])
-    return kb
+        b.row(types.InlineKeyboardButton(text="💎 8 КАНАЛОВ (ПАКЕТ — 3 333 тг)", callback_data="buy_pack_8"))
+        b.row(types.InlineKeyboardButton(text="📱 1 КАНАЛ (по своей цене)",      callback_data="buy_list_1"))
+        b.row(types.InlineKeyboardButton(text="🔞 VIP ОБЗОР (290 тг)",           callback_data="buy_vip_obzor"))
+        b.row(types.InlineKeyboardButton(text="🎁 Что внутри 8 каналов?",        callback_data="show_channels"))
+        b.row(types.InlineKeyboardButton(text="🎁 БЕСПЛАТНЫЙ КАНАЛ",             callback_data="ref_link"))
+    return b.as_markup()
 
 
-# ================= START =================
+def get_channel_kb(lang='kz'):
+    b = InlineKeyboardBuilder()
+    for key, ch in CHANNELS.items():
+        price_str = f"{ch['price']:,}".replace(",", " ")
+        b.row(types.InlineKeyboardButton(
+            text=f"{ch['name']} — {price_str} тг",
+            callback_data=f"select_{key}",
+        ))
+    back = "⬅️ Артқа" if lang == 'kz' else "⬅️ Назад"
+    b.row(types.InlineKeyboardButton(text=back, callback_data="go_to_main"))
+    return b.as_markup()
 
-@dp.message(CommandStart())
-async def start(message: types.Message):
+
+def get_back_kb(lang='kz'):
+    b = InlineKeyboardBuilder()
+    back = "⬅️ Артқа" if lang == 'kz' else "⬅️ Назад"
+    b.row(types.InlineKeyboardButton(text=back, callback_data="go_to_main"))
+    return b.as_markup()
+
+
+def get_referral_kb(lang='kz'):
+    b = InlineKeyboardBuilder()
+    b.row(types.InlineKeyboardButton(text="📊 Прогресс", callback_data="ref_progress"))
+    back = "⬅️ Артқа" if lang == 'kz' else "⬅️ Назад"
+    b.row(types.InlineKeyboardButton(text=back, callback_data="go_to_main"))
+    return b.as_markup()
+
+
+# ─── HELPERS ─────────────────────────────────────────────────────────────────
+def fmt(price: int) -> str:
+    return f"{price:,}".replace(",", " ")
+
+
+def ud(user_id: int) -> dict:
+    if user_id not in user_data:
+        user_data[user_id] = {}
+    return user_data[user_id]
+
+
+# ─── /start ──────────────────────────────────────────────────────────────────
+@dp.message(Command("start"))
+async def cmd_start(message: types.Message):
     user_id = message.from_user.id
+    args    = message.text.split()[1] if len(message.text.split()) > 1 else None
 
-    ud(user_id)  # init user
+    # referral tracking
+    if args and args.startswith("ref_"):
+        try:
+            referrer_id = int(args.replace("ref_", ""))
+        except ValueError:
+            referrer_id = None
+        if referrer_id and referrer_id != user_id and user_id not in user_data:
+            referral_data.setdefault(referrer_id, set()).add(user_id)
+            count = len(referral_data[referrer_id])
+            if count >= REFERRAL_GOAL:
+                ref_lang = ud(referrer_id).get('lang', 'kz')
+                if ref_lang == 'kz':
+                    msg = f"🎉 *Құттықтаймын!* {REFERRAL_GOAL} адам жинадың!\n\nТЕГІН каналың:\n{REFERRAL_FREE_CHANNEL} 💋"
+                else:
+                    msg = f"🎉 *Поздравляю!* {REFERRAL_GOAL} человек собрал!\n\nТвой БЕСПЛАТНЫЙ канал:\n{REFERRAL_FREE_CHANNEL} 💋"
+                try:
+                    await bot.send_message(referrer_id, msg, parse_mode="Markdown")
+                except Exception as e:
+                    print(f"[REF] reward error: {e}")
 
-    await bot.send_photo(
-        user_id,
-        photo=PHOTO_START_1,
-        caption="Сәлем жаным 😘 Мен сені күтіп отыр едім..."
-    )
-
-    await bot.send_photo(
-        user_id,
-        photo=PHOTO_START_2,
-        caption="Ішіндегі видеоларды көрсең... 😏🔥"
-    )
-
-    await message.answer(
-        "Дайынсың ба? 😏👇",
-        reply_markup=get_main_kb()
-    )
-
-
-# ================= CHANNELS =================
-
-CHANNELS = [
-    {"name": "🔥 VIP KANAL 1", "price": 3333},
-    {"name": "💋 QAZAQSHA PRIVATE", "price": 3333},
-    {"name": "😏 BLOGER SLIV", "price": 3333},
-    {"name": "🔥 VIP 2", "price": 3333},
-]
+    d = ud(user_id)
+    d['stage'] = 'lang_select'
+    d.setdefault('lang', 'kz')
+    await message.answer("🌐 Тілді таңдаңыз / Выберите язык:", reply_markup=get_lang_kb())
 
 
+@dp.callback_query(F.data.startswith("lang_"))
+async def process_lang(cb: types.CallbackQuery):
+    user_id = cb.from_user.id
+    lang    = cb.data.split("_")[1]
+    d       = ud(user_id)
+    d['lang']  = lang
+    d['stage'] = 'start'
+    if lang == 'kz':
+        text = "Сәлем жаным 🥰 Мен сені күтіп отыр едім... Пакетті таңда да, ішке кір! 💋"
+    else:
+        text = "Привет зай 🥰 Я тебя ждала... Выбирай пакет и заходи! 💋"
+    await cb.message.edit_text(text, reply_markup=get_main_kb(lang))
+    await cb.answer()
+
+
+@dp.callback_query(F.data == "go_to_main")
+async def go_main(cb: types.CallbackQuery):
+    lang = ud(cb.from_user.id).get('lang', 'kz')
+    text = "🌟 Таңдау жасаңыз 👇" if lang == 'kz' else "🌟 Сделай выбор 👇"
+    await cb.message.edit_text(text, reply_markup=get_main_kb(lang))
+    await cb.answer()
+
+
+# ─── REFERRAL ────────────────────────────────────────────────────────────────
+@dp.callback_query(F.data == "ref_link")
+async def ref_link(cb: types.CallbackQuery):
+    user_id = cb.from_user.id
+    lang    = ud(user_id).get('lang', 'kz')
+    bot_me  = await bot.get_me()
+    ref_url = f"https://t.me/{bot_me.username}?start=ref_{user_id}"
+    count   = len(referral_data.get(user_id, set()))
+    if lang == 'kz':
+        text = (f"🎁 *ТЕГІН КАНАЛҒА КІРУ*\n\n"
+                f"Осы сілтемені {REFERRAL_GOAL} досыңа жібер:\n`{ref_url}`\n\n"
+                f"📊 Прогресс: *{count}/{REFERRAL_GOAL}*")
+    else:
+        text = (f"🎁 *БЕСПЛАТНЫЙ КАНАЛ*\n\n"
+                f"Отправь эту ссылку {REFERRAL_GOAL} друзьям:\n`{ref_url}`\n\n"
+                f"📊 Прогресс: *{count}/{REFERRAL_GOAL}*")
+    await cb.message.edit_text(text, reply_markup=get_referral_kb(lang), parse_mode="Markdown")
+    await cb.answer()
+
+
+@dp.callback_query(F.data == "ref_progress")
+async def ref_progress(cb: types.CallbackQuery):
+    user_id = cb.from_user.id
+    lang    = ud(user_id).get('lang', 'kz')
+    count   = len(referral_data.get(user_id, set()))
+    remaining = max(0, REFERRAL_GOAL - count)
+    bar = "🟩" * min(count, REFERRAL_GOAL) + "⬜" * (REFERRAL_GOAL - min(count, REFERRAL_GOAL))
+    if lang == 'kz':
+        text = (f"📊 *Реферал прогресі*\n\n{bar}\n"
+                f"👥 Шақырған: *{count}/{REFERRAL_GOAL}*\n"
+                f"🎯 Қалды: *{remaining}*")
+    else:
+        text = (f"📊 *Прогресс реферала*\n\n{bar}\n"
+                f"👥 Приглашено: *{count}/{REFERRAL_GOAL}*\n"
+                f"🎯 Осталось: *{remaining}*")
+    await cb.message.edit_text(text, reply_markup=get_referral_kb(lang), parse_mode="Markdown")
+    await cb.answer()
+
+
+# ─── SHOW CHANNELS INFO ───────────────────────────────────────────────────────
 @dp.callback_query(F.data == "show_channels")
 async def show_channels(cb: types.CallbackQuery):
     await cb.answer()
+    user_id = cb.from_user.id
+    lang    = ud(user_id).get('lang', 'kz')
 
-    text = "🔥 <b>VIP КАНАЛДАР:</b>\n\n"
-
-    for ch in CHANNELS:
-        text += f"• {ch['name']} — {ch['price']} тг\n"
-
-    text += "\n👇 Таңда да кір 😏"
-
-    await cb.message.delete()
-
-    await bot.send_photo(
-        cb.from_user.id,
-        photo=PHOTO_CHANNEL,
-        caption=text,
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text=ch["name"], callback_data=f"buy_{i}")]
-                for i, ch in enumerate(CHANNELS)
-            ]
-        )
+    # Step 1: Clean text list — NO URLs, just names with beautiful formatting
+    LIST_TEXT = (
+        "🔥 🌸 <b><u>DETSKIY POLNYY VIDEOLAR</u></b> 🌸 🔥\n"
+        "🔥 💋 <b><u>Taza qazaqsha shkolnikter</u></b> 💖 🔥\n"
+        "🔥 ✨ <b><u>ҚЫЗДАРДЫҢ НӨМІРІ ЖӘНЕ МЕКЕН-ЖАЙЫ (KZ)</u></b> ✨ 🔥\n"
+        "🔥 📺 <b><u>VIP KANAL</u></b> 🔥\n"
+        "🔥 💋 <b><u>Sen izdegen qazaqsha kanaldar</u></b> 💋 🔥\n"
+        "🔥 📺 <b><u>VIDEO KZ</u></b> 🔥\n"
+        "🔥 😍 <b><u>BLOGERLER SLIV</u></b> 😍 🔥\n"
+        "🔥 🔥 <b><u>V I P 2</u></b> 🔥 🔥\n\n"
+        "👇 <b>Қазір төле де, бірден рахатын көр!</b>"
     )
+    await cb.message.edit_text(LIST_TEXT, parse_mode="HTML", reply_markup=get_main_kb(lang))
+
+    # Step 2: Send preview photos with captions
+    CHANNEL_CAPTIONS = {
+        "ch_1": "🔥 🌸 <b><u>DETSKIY POLNYY VIDEOLAR</u></b> 🌸 🔥",
+        "ch_2": "🔥 💋 <b><u>Taza qazaqsha shkolnikter</u></b> 💖 🔥",
+        "ch_3": "🔥 ✨ <b><u>ҚЫЗДАРДЫҢ НӨМІРІ ЖӘНЕ МЕКЕН-ЖАЙЫ (KZ)</u></b> ✨ 🔥",
+        "ch_4": "🔥 📺 <b><u>VIP KANAL</u></b> 🔥",
+        "ch_5": "🔥 💋 <b><u>Sen izdegen qazaqsha kanaldar</u></b> 💋 🔥",
+        "ch_6": "🔥 📺 <b><u>VIDEO KZ</u></b> 🔥",
+        "ch_7": "🔥 😍 <b><u>BLOGERLER SLIV</u></b> 😍 🔥",
+        "ch_8": "🔥 🔥 <b><u>V I P 2</u></b> 🔥 🔥",
+    }
+
+    for ch_key, caption in CHANNEL_CAPTIONS.items():
+        try:
+            await bot.send_message(
+                user_id,
+                text=caption,
+                parse_mode="HTML",
+            )
+            await asyncio.sleep(0.4)   # small pause — avoids Telegram rate-limit
+        except Exception as e:
+            print(f"[PREVIEW] Error sending preview for {ch_key}: {e}")
 
 
-# ================= BUY =================
+# ─── BUY: 8-CHANNEL PACK ─────────────────────────────────────────────────────
+@dp.callback_query(F.data == "buy_pack_8")
+async def buy_pack_8(cb: types.CallbackQuery):
+    user_id = cb.from_user.id
+    lang    = ud(user_id).get('lang', 'kz')
+    d = ud(user_id)
+    d['pack']          = '8_kanal'
+    d['stage']         = 'wait_1'
+    d['channel_name']  = '8 КАНАЛ ПАКЕТІ'
+    d['channel_price'] = 3333
 
-@dp.callback_query(F.data.startswith("buy_"))
-async def buy_channel(cb: types.CallbackQuery):
+    if lang == 'kz':
+        text = (f"💎 *8 КАНАЛ ПАКЕТІ — 3 333 тг*\n\n"
+                f"💳 Kaspi картасына аудар:\n`{KASPI_NUMBER}`\n"
+                f"👤 *{KASPI_NAME}*\n\n"
+                f"📸 Чекті осы чатқа жібер! 🔥")
+    else:
+        text = (f"💎 *ПАКЕТ 8 КАНАЛОВ — 3 333 тг*\n\n"
+                f"💳 Переведи на Kaspi:\n`{KASPI_NUMBER}`\n"
+                f"👤 *{KASPI_NAME}*\n\n"
+                f"📸 Скинь чек сюда! 🔥")
+    await cb.message.edit_text(text, reply_markup=get_back_kb(lang), parse_mode="Markdown")
     await cb.answer()
 
-    index = int(cb.data.split("_")[1])
-    ch = CHANNELS[index]
 
-    text = f"""
-📱 {ch['name']}
+# ─── BUY: VIP ОБЗОР ──────────────────────────────────────────────────────────
+@dp.callback_query(F.data == "buy_vip_obzor")
+async def buy_vip_obzor(cb: types.CallbackQuery):
+    user_id = cb.from_user.id
+    lang    = ud(user_id).get('lang', 'kz')
+    d = ud(user_id)
+    d['pack']          = 'vip_obzor'
+    d['stage']         = 'wait_vip'
+    d['channel_name']  = VIP_OBZOR['name']
+    d['channel_price'] = VIP_OBZOR['price']
 
-💰 Баға: {ch['price']} тг
-
-💳 Kaspi:
-{KASPI_NUMBER}
-👤 {KASPI_NAME}
-
-📸 Чек жіберші 😘
-"""
-
-    await bot.send_photo(
-        cb.from_user.id,
-        photo=PHOTO_PAYMENT,
-        caption=text
-    ) 
-# ================= ADMIN =================
-
-ADMIN_ID = 123456789  # өз ID қой!
+    if lang == 'kz':
+        text = (f"🔞 *VIP ОБЗОР — 290 тг*\n\n"
+                f"💳 Kaspi картасына аудар:\n`{KASPI_NUMBER}`\n"
+                f"👤 *{KASPI_NAME}*\n\n"
+                f"📸 Чекті осы чатқа жібер — бірден ашамын! 🔥")
+    else:
+        text = (f"🔞 *VIP ОБЗОР — 290 тг*\n\n"
+                f"💳 Переведи на Kaspi:\n`{KASPI_NUMBER}`\n"
+                f"👤 *{KASPI_NAME}*\n\n"
+                f"📸 Скинь чек сюда — сразу открою! 🔥")
+    await cb.message.edit_text(text, reply_markup=get_back_kb(lang), parse_mode="Markdown")
+    await cb.answer()
 
 
-# ================= SEND CHECK =================
+# ─── BUY: 1 CHANNEL (channel selection) ──────────────────────────────────────
+@dp.callback_query(F.data == "buy_list_1")
+async def buy_list_1(cb: types.CallbackQuery):
+    lang = ud(cb.from_user.id).get('lang', 'kz')
+    text = ("👇 Қай каналды алғыңыз келеді? Бағасы жанында:"
+            if lang == 'kz' else
+            "👇 Какой канал хочешь? Цена указана рядом:")
+    await cb.message.edit_text(text, reply_markup=get_channel_kb(lang))
+    await cb.answer()
 
-@dp.message(F.photo)
-async def handle_check(message: types.Message):
+
+@dp.callback_query(F.data.startswith("select_"))
+async def select_channel(cb: types.CallbackQuery):
+    user_id = cb.from_user.id
+    lang    = ud(user_id).get('lang', 'kz')
+    ch_key  = cb.data.replace("select_", "")
+    ch      = CHANNELS[ch_key]
+    d = ud(user_id)
+    d['pack']          = '1_kanal'
+    d['stage']         = 'wait_1'
+    d['channel']       = ch_key
+    d['channel_name']  = ch['name']
+    d['channel_price'] = ch['price']
+
+    price_str = fmt(ch['price'])
+    if lang == 'kz':
+        text = (f"📱 *{ch['name']} — {price_str} тг. Растайсыз ба?*\n\n"
+                f"💳 Kaspi картасына аудар:\n`{KASPI_NUMBER}`\n"
+                f"👤 *{KASPI_NAME}*\n\n"
+                f"📸 Чекті осы чатқа жібер! 🔥")
+    else:
+        text = (f"📱 *{ch['name']} — {price_str} тг. Подтверждаете?*\n\n"
+                f"💳 Переведи на Kaspi:\n`{KASPI_NUMBER}`\n"
+                f"👤 *{KASPI_NAME}*\n\n"
+                f"📸 Скинь чек сюда! 🔥")
+    await cb.message.edit_text(text, reply_markup=get_back_kb(lang), parse_mode="Markdown")
+    await cb.answer()
+
+
+# ─── RECEIPT HANDLER ─────────────────────────────────────────────────────────
+@dp.message(F.photo | F.document)
+async def handle_receipt(message: types.Message):
     user_id = message.from_user.id
+    d       = ud(user_id)
+    lang    = d.get('lang', 'kz')
+    stage   = d.get('stage', 'wait_1')
+    pack    = d.get('pack', '1_kanal')
+    ch_name = d.get('channel_name', '—')
+    ch_price = d.get('channel_price', 0)
+    price_str = fmt(ch_price)
 
-    caption = f"""
-💸 Жаңа чек!
+    # Helper to send photo or doc to admin
+    async def send_to_admin(caption, kb):
+        if message.photo:
+            await bot.send_photo(ADMIN_ID, message.photo[-1].file_id, caption=caption, reply_markup=kb)
+        else:
+            await bot.send_document(ADMIN_ID, message.document.file_id, caption=caption, reply_markup=kb)
 
-👤 User: {user_id}
-"""
+    user_ack = "✅ Чек қабылданды! Тексеріп жатырмын..." if lang == 'kz' else "✅ Чек принят! Проверяю..."
 
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="✅ Қабылдау", callback_data=f"accept_{user_id}"),
-            InlineKeyboardButton(text="❌ Бас тарту", callback_data=f"reject_{user_id}")
-        ]
-    ])
-
-    await bot.send_photo(
-        ADMIN_ID,
-        photo=message.photo[-1].file_id,
-        caption=caption,
-        reply_markup=kb
-    )
-
-    await message.answer("Чек жіберілді, күте тұр 😘")
-
-
-# ================= ACCEPT =================
-
-@dp.callback_query(F.data.startswith("accept_"))
-async def accept_payment(cb: types.CallbackQuery):
-    await cb.answer()
-
-    user_id = int(cb.data.split("_")[1])
-
-    ud(user_id)["paid"] = True
-
-    await bot.send_message(
-        user_id,
-        "🔥 Төлем қабылданды!\n\nСілтеме:\nhttps://t.me/your_channel"
-    )
-
-    await cb.message.edit_text("✅ Қабылданды")
-
-
-# ================= REJECT =================
-
-@dp.callback_query(F.data.startswith("reject_"))
-async def reject_payment(cb: types.CallbackQuery):
-    await cb.answer()
-
-    user_id = int(cb.data.split("_")[1])
-
-    await bot.send_message(
-        user_id,
-        "❌ Чек дұрыс емес, қайта жібер 😘"
-    )
-
-    await cb.message.edit_text("❌ Бас тартылды")
-
-
-# ================= FOLLOW-UP =================
-
-async def follow_up(user_id):
-    await asyncio.sleep(300)
-
-    if not ud(user_id)["paid"]:
-        await bot.send_photo(
-            user_id,
-            photo=PHOTO_FOLLOW,
-            caption="Жаным, жоғалып кеттің ғой 😔"
-        )
-
-    await asyncio.sleep(600)
-
-    if not ud(user_id)["paid"]:
-        await bot.send_message(
-            user_id,
-            "Соңғы шанс 😏 бүгін соңғы баға"
-        )
-
-
-# ================= TRIGGER FOLLOW =================
-
-@dp.message()
-async def trigger_follow(message: types.Message):
-    asyncio.create_task(follow_up(message.from_user.id))
-
-
-# ================= FAKE ACTIVITY =================
-
-async def fake_activity():
-    while True:
-        await asyncio.sleep(random.randint(60, 120))
-
-        for user_id in users:
-            try:
-                await bot.send_message(
-                    user_id,
-                    random.choice([
-                        "🔥 Біреу сатып алды",
-                        "💸 Тағы 1 адам кірді",
-                        "😏 Қазір бәрі алып жатыр"
-                    ])
-                )
-            except:
-                pass
-
-
-# ================= START BACKGROUND =================
-
-async def on_startup():
-    asyncio.create_task(fake_activity())
-    # ================= EXTRA SYSTEM =================
-
-# -------- USER STATS --------
-stats = {
-    "users": 0,
-    "paid": 0
-}
-
-def update_stats(user_id):
-    if user_id not in users:
-        stats["users"] += 1
-
-
-# -------- REFERRAL SYSTEM --------
-def set_ref(user_id, ref_id=None):
-    data = ud(user_id)
-    if "ref" not in data:
-        data["ref"] = ref_id
-
-
-def add_bonus(user_id):
-    data = ud(user_id)
-    data["bonus"] = data.get("bonus", 0) + 1
-
-
-# -------- ADMIN STATS --------
-@dp.message(F.text == "/admin")
-async def admin_panel(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
+    # ── VIP ОБЗОР ──
+    if pack == 'vip_obzor' or stage == 'wait_vip':
+        kb = InlineKeyboardBuilder()
+        kb.row(types.InlineKeyboardButton(text="✅ VIP ОБЗОР Растау", callback_data=f"confvip_{user_id}"))
+        kb.row(types.InlineKeyboardButton(text="❌ Бас тарту", callback_data=f"rej_{user_id}"))
+        cap = (f"🔔 ЧЕК — VIP ОБЗОР\n"
+               f"👤 User ID: {user_id}\n"
+               f"💰 290 тг\n"
+               f"📌 User wants VIP ОБЗОР for 290 тг. Confirm receipt?")
+        await send_to_admin(cap, kb.as_markup())
+        await message.answer(user_ack)
         return
 
-    text = f"""
-📊 Статистика:
+    # ── Commission (2nd payment) ──
+    if stage == 'wait_2':
+        comm = "1 777 тг" if pack == '8_kanal' else "1 555 тг"
+        kb = InlineKeyboardBuilder()
+        kb.row(types.InlineKeyboardButton(text="✅ Комиссия Растау", callback_data=f"conf2_{user_id}"))
+        kb.row(types.InlineKeyboardButton(text="❌ Бас тарту", callback_data=f"rej_{user_id}"))
+        cap = (f"🔔 ЧЕК — КОМИССИЯ\n"
+               f"👤 User ID: {user_id}\n"
+               f"💰 {comm}")
+        await send_to_admin(cap, kb.as_markup())
+        await message.answer(user_ack)
+        return
 
-👥 Users: {len(users)}
-💸 Paid: {sum(1 for u in users.values() if u.get("paid"))}
-"""
-
-    await message.answer(text)
-
-
-# -------- LOGGING --------
-def log(msg):
-    print(f"[LOG] {msg}")
-
-
-# -------- ERROR HANDLER --------
-@dp.errors()
-async def error_handler(update, exception):
-    print("ERROR:", exception)
-    return True
-
-
-# ================= KEEP ALIVE (RENDER) =================
-
-from flask import Flask
-import threading
-
-app = Flask('')
+    # ── Main payment (1st payment) ──
+    kb = InlineKeyboardBuilder()
+    kb.row(types.InlineKeyboardButton(text="✅ Төлемді Растау", callback_data=f"conf1_{user_id}"))
+    kb.row(types.InlineKeyboardButton(text="❌ Бас тарту", callback_data=f"rej_{user_id}"))
+    cap = (f"🔔 ЧЕК — НЕГІЗГІ ТӨЛЕМ\n"
+           f"👤 User ID: {user_id}\n"
+           f"📺 Канал: {ch_name}\n"
+           f"💰 {price_str} тг\n"
+           f"📌 User wants {ch_name} for {price_str} тг. Confirm receipt?")
+    await send_to_admin(cap, kb.as_markup())
+    await message.answer(user_ack)
 
 
-@app.route('/')
-def home():
-    return "Bot is alive!"
+# ─── ADMIN CONFIRMATIONS ──────────────────────────────────────────────────────
+
+# VIP ОБЗОР confirmed
+@dp.callback_query(F.data.startswith("confvip_"))
+async def conf_vip(cb: types.CallbackQuery):
+    await cb.answer()
+    user_id = int(cb.data.split("_")[1])
+    lang = ud(user_id).get('lang', 'kz')
+    ud(user_id)['stage'] = 'done'
+    vip_obzor_users.add(user_id)
+    if lang == 'kz':
+        msg = f"🎉 *VIP ОБЗОР расталды!*\n\nМіне жабық канал:\n{VIP_OBZOR['link']} 🔥\n\nРахаттан жаным! 💋"
+    else:
+        msg = f"🎉 *VIP ОБЗОР подтверждён!*\n\nВот закрытый канал:\n{VIP_OBZOR['link']} 🔥\n\nНаслаждайся зай! 💋"
+    await bot.send_message(user_id, msg, parse_mode="Markdown")
+    try:
+        await cb.message.edit_caption("✅ VIP ОБЗОР расталды")
+    except Exception:
+        await cb.message.edit_text("✅ VIP ОБЗОР расталды")
 
 
-def run_flask():
-    port = int(os.environ.get("PORT", 8000))
-    app.run(host='0.0.0.0', port=port)
+# Main payment confirmed → send links + ask commission
+@dp.callback_query(F.data.startswith("conf1_"))
+async def conf1(cb: types.CallbackQuery):
+    await cb.answer()
+    user_id = int(cb.data.split("_")[1])
+    d    = ud(user_id)
+    lang = d.get('lang', 'kz')
+    pack = d.get('pack', '1_kanal')
+    d['stage'] = 'wait_2'
+
+    if pack == '8_kanal':
+        links = ("🎁 КАНАЛДАР:\n" if lang == 'kz' else "🎁 КАНАЛЫ:\n") + \
+                "\n".join([f"🔗 {v['name']}: {v['link']}" for v in CHANNELS.values()])
+        comm = "1 777"
+    else:
+        ch = CHANNELS.get(d.get('channel', 'ch_1'), CHANNELS['ch_1'])
+        links = (f"🎁 КАНАЛЫҢЫЗ:\n🔗 {ch['name']}: {ch['link']}" if lang == 'kz'
+                 else f"🎁 ТВОЙ КАНАЛ:\n🔗 {ch['name']}: {ch['link']}")
+        comm = "1 555"
+
+    if lang == 'kz':
+        text = (f"✅ *Бірінші төлем расталды!*\n\n{links}\n\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"⚠️ *СОҢҒЫ ҚАДАМ — {comm} тг*\n"
+                f"━━━━━━━━━━━━━━━\n\n"
+                f"Бұл бір рет қана жасалатын комиссия. Барлық клиент осылай алады!\n\n"
+                f"💳 Kaspi:\n`{KASPI_NUMBER}`\n👤 *{KASPI_NAME}*\n\n"
+                f"📸 Чекті осы чатқа жібер!")
+    else:
+        text = (f"✅ *Первый платеж подтверждён!*\n\n{links}\n\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"⚠️ *ПОСЛЕДНИЙ ШАГ — {comm} тг*\n"
+                f"━━━━━━━━━━━━━━━\n\n"
+                f"Это разовая комиссия. Все клиенты так покупают!\n\n"
+                f"💳 Kaspi:\n`{KASPI_NUMBER}`\n👤 *{KASPI_NAME}*\n\n"
+                f"📸 Скинь чек сюда!")
+    await bot.send_message(user_id, text, parse_mode="Markdown")
+    try:
+        await cb.message.edit_caption("✅ Расталды, ссылка жіберілді")
+    except Exception:
+        await cb.message.edit_text("✅ Расталды, ссылка жіберілді")
 
 
-def keep_alive():
-    t = threading.Thread(target=run_flask)
-    t.start()
+# Commission confirmed → fully paid
+@dp.callback_query(F.data.startswith("conf2_"))
+async def conf2(cb: types.CallbackQuery):
+    await cb.answer()
+    user_id = int(cb.data.split("_")[1])
+    lang = ud(user_id).get('lang', 'kz')
+    ud(user_id)['stage'] = 'done'
+    paid_users.add(user_id)
+    msg = ("🎉 Құттықтаймыз! Комиссия қабылданды. Каналдарды еш кедергісіз тамашалай аласыз!"
+           if lang == 'kz' else
+           "🎉 Поздравляем! Комиссия принята. Наслаждайся каналами!")
+    await bot.send_message(user_id, msg)
+    try:
+        await cb.message.edit_caption("✅ Толық расталды")
+    except Exception:
+        await cb.message.edit_text("✅ Толық расталды")
 
 
-# ================= MAIN RUN =================
+# Reject
+@dp.callback_query(F.data.startswith("rej_"))
+async def rej(cb: types.CallbackQuery):
+    await cb.answer()
+    user_id = int(cb.data.split("_")[1])
+    lang = ud(user_id).get('lang', 'kz')
+    msg = ("❌ Кешіріңіз, төлеміңіз расталмады. Қайта жіберіңіз."
+           if lang == 'kz' else
+           "❌ Извини, платеж не подтвержден. Отправь заново.")
+    await bot.send_message(user_id, msg)
+    try:
+        await cb.message.edit_caption("❌ Бас тартылды")
+    except Exception:
+        await cb.message.edit_text("❌ Бас тартылды")
 
+
+# Discount offer (admin reply)
+@dp.callback_query(F.data.startswith("offeryes_"))
+async def offer_yes(cb: types.CallbackQuery):
+    await cb.answer()
+    user_id = int(cb.data.split("_")[1])
+    lang = ud(user_id).get('lang', 'kz')
+    if lang == 'kz':
+        await bot.send_message(user_id, f"✅ Жарайды жаным, сол соманы жібер!\n💳 Kaspi: `{KASPI_NUMBER}`", parse_mode="Markdown")
+    else:
+        await bot.send_message(user_id, f"✅ Хорошо зай, скидывай!\n💳 Kaspi: `{KASPI_NUMBER}`", parse_mode="Markdown")
+    await cb.message.edit_text("✅ Жеңілдікке рұқсат берілді.")
+
+
+@dp.callback_query(F.data.startswith("offerno_"))
+async def offer_no(cb: types.CallbackQuery):
+    await cb.answer()
+    user_id = int(cb.data.split("_")[1])
+    lang = ud(user_id).get('lang', 'kz')
+    if lang == 'kz':
+        await bot.send_message(user_id, "❌ Жоқ жаным, ренжіме. Толық төлемнен кейін ғана кіре аласың.")
+    else:
+        await bot.send_message(user_id, "❌ Нет зай, извини. Доступ только после полной оплаты.")
+    await cb.message.edit_text("❌ Жеңілдіктен бас тартылды.")
+
+
+# ─── JOIN REQUEST AUTO-APPROVE ────────────────────────────────────────────────
+@dp.chat_join_request()
+async def handle_join_request(request: ChatJoinRequest):
+    user_id = request.from_user.id
+    chat_id = request.chat.id
+    if user_id in paid_users or user_id in vip_obzor_users:
+        try:
+            await bot.approve_chat_join_request(chat_id=chat_id, user_id=user_id)
+            print(f"[JOIN] ✅ Approved {user_id} → chat {chat_id}")
+        except Exception as e:
+            print(f"[JOIN] ❌ Error approving {user_id}: {e}")
+    else:
+        print(f"[JOIN] ⛔ Not paid — {user_id} in chat {chat_id}")
+
+
+# ─── AI CHAT (GEMINI) ─────────────────────────────────────────────────────────
+async def call_gemini(system_prompt: str, user_text: str, history: list) -> str | None:
+    """
+    Call Google Gemini API with proper async handling and error management.
+    Returns AI response or None on error.
+    """
+    try:
+        # Build conversation history for Gemini
+        contents = []
+        
+        # Add system prompt as first user message
+        contents.append({
+            "role": "user",
+            "parts": [{"text": system_prompt}]
+        })
+        contents.append({
+            "role": "model",
+            "parts": [{"text": "Түсінікті, мен Айсұлумын! 😘"}]
+        })
+        
+        # Add conversation history
+        for msg in history:
+            role = "user" if msg["role"] == "user" else "model"
+            contents.append({
+                "role": role,
+                "parts": [{"text": msg["content"]}]
+            })
+        
+        # Add current user message
+        contents.append({
+            "role": "user",
+            "parts": [{"text": user_text}]
+        })
+        
+        # Generate response asynchronously
+        response = await asyncio.to_thread(
+            genai_client.models.generate_content,
+            model='gemini-1.5-flash',
+            contents=contents,
+            config={
+                'temperature': 0.9,
+                'top_p': 0.95,
+                'top_k': 40,
+                'max_output_tokens': 200,
+            }
+        )
+        
+        return response.text if response and hasattr(response, 'text') else None
+        
+    except Exception as e:
+        print(f"[GEMINI ERROR] {type(e).__name__}: {e}")
+        return None
+
+
+@dp.message()
+async def ai_handler(message: types.Message):
+    # Ignore admin messages and non-text messages
+    if message.from_user.id == ADMIN_ID or not message.text:
+        return
+    
+    user_id  = message.from_user.id
+    d        = ud(user_id)
+    lang     = d.get('lang', 'kz')
+    stage    = d.get('stage', 'start')
+    pack     = d.get('pack', '1_kanal')
+    history  = d.setdefault('history', [])
+    reply_kb = get_main_kb(lang)
+
+    # Channel content triggers — show quick info without AI
+    triggers = ["не бар", "не кіреді", "қандай", "кандай", "ішінде", "ышынде",
+                "что внутри", "какие каналы", "что входит", "внутри", "нелер бар"]
+    if stage not in ('wait_2', 'done', 'wait_vip') and any(w in message.text.lower() for w in triggers):
+        lines = "\n".join([f"🔥 {v['name']} — {fmt(v['price'])} тг" for v in CHANNELS.values()])
+        text = (f"Іште не бар:\n\n{lines}\n\n👇 Қазір төле!" if lang == 'kz'
+                else f"Что внутри:\n\n{lines}\n\n👇 Оплачивай сейчас!")
+        await message.answer(text, reply_markup=reply_kb)
+        return
+
+    # Build dynamic context based on user stage
+    comm = "1 777" if pack == '8_kanal' else "1 555"
+    lang_rule = ("ҚАЗАҚША сөйле. 'Жаным', 'Күнім' де." if lang == 'kz'
+                 else "Говори строго НА РУССКОМ. 'Зай', 'Милый' де.")
+
+    if stage == 'done':
+        dynamic = "Клиент төледі. Ештеңе сатпа. Еркін флиртпен сөйлес."
+        reply_kb = None
+    elif stage == 'wait_vip':
+        dynamic = "Клиент VIP ОБЗОР чекін күтуде. Жылы сөзбен шақыр."
+        reply_kb = None
+    elif stage == 'wait_2':
+        if lang == 'kz':
+            dynamic = (f"ЕКІНШІ ТӨЛЕМ ({comm} тг) күтілуде. "
+                       f"Скидка десе: 'Бұл қазірдің өзінде скидка'. "
+                       f"Ақшам жоқ десе: 'Қанша сала аласың?' деп сұра. "
+                       f"Нақты сома айтса: [АДМИН] деп қос.")
+        else:
+            dynamic = (f"ЖДЕМ ВТОРОЙ ПЛАТЕЖ ({comm} тг). "
+                       f"Скидка: 'Это уже со скидкой'. "
+                       f"Нет денег: 'Сколько можешь скинуть?'. "
+                       f"Конкретная сумма: добавь [АДМИН].")
+        reply_kb = None
+    else:
+        dynamic = ("Екінші төлем туралы сұраса — мүлдем жоқ де."
+                   if lang == 'kz' else
+                   "Про второй платеж — скажи что нет.")
+
+    full_prompt = f"{SYSTEM_PROMPT} {lang_rule}\nМАҰЫЗДЫ: {dynamic}"
+    
+    # ✅ FIX: Send "Thinking..." BEFORE calling AI
+    thinking_msg = await message.answer(
+        "Ойланып жатырмын..." if lang == 'kz' else "Думаю..."
+    )
+    
+    # Call Gemini API
+    response = await call_gemini(full_prompt, message.text, history)
+    
+    # Delete "Thinking..." message
+    try:
+        await thinking_msg.delete()
+    except Exception:
+        pass
+
+    if response:
+        # Update conversation history
+        history.append({"role": "user",      "content": message.text})
+        history.append({"role": "assistant", "content": response})
+        
+        # Keep only last 10 messages to avoid token limits
+        if len(history) > 10:
+            d['history'] = history[-10:]
+
+        # Check if admin approval needed for discount
+        if "[АДМИН]" in response:
+            response = response.replace("[АДМИН]", "").strip()
+            akb = InlineKeyboardBuilder()
+            akb.add(types.InlineKeyboardButton(text="✅ Иә", callback_data=f"offeryes_{user_id}"))
+            akb.add(types.InlineKeyboardButton(text="❌ Жоқ", callback_data=f"offerno_{user_id}"))
+            await bot.send_message(ADMIN_ID,
+                                   f"🔔 СКИДКА СҰРАУ\n👤 ID: {user_id}\n💬 {message.text}",
+                                   reply_markup=akb.as_markup())
+        
+        await message.answer(response, reply_markup=reply_kb)
+    else:
+        # Fallback if AI fails
+        fallback = ("Жаным, сәл күте тұрыңыз... 🥰" if lang == 'kz' else "Зай, секунду... 🥰")
+        await message.answer(fallback, reply_markup=reply_kb)
+
+
+# ─── MAIN ────────────────────────────────────────────────────────────────────
 async def main():
-    keep_alive()
-
-    print("🚀 BOT STARTED")
-
+    print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    print("  АЙСҰЛУ БОТ ІСКЕ ҚОСЫЛДЫ ✅")
+    print("  Flask keep-alive: http://0.0.0.0:8000/")
+    print("  Gemini Model: gemini-1.5-flash")
+    print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    
+    # Start self-ping loop for keep-alive
+    asyncio.create_task(self_ping_loop())
+    
+    # Start bot polling
     await dp.start_polling(bot)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    keep_alive()
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        print("Бот тоқтатылды!")
+    except Exception as e:
+        print(f"Қате шықты: {e}")    
