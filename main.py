@@ -1297,6 +1297,140 @@ async def ai_handler(message: types.Message):
             )
             logger.info(f"[ADMIN] Discount request from user {user_id}")
         
+      # ─── AI CHAT (GEMINI) ─────────────────────────────────────────────────────────
+
+@dp.message()
+async def ai_handler(message: types.Message):
+    # Ignore admin messages and non-text messages
+    if message.from_user.id == ADMIN_ID or not message.text:
+        return
+    
+    user_id = message.from_user.id
+    
+    # Anti-spam check
+    if is_spam(user_id):
+        await message.answer("⏳ Жаным, күте тұршы... 💋 Неге көп жазып жатырсың?")
+        return
+    
+    user_messages[user_id].append(time.time())
+    
+    d = ud(user_id)
+    lang = d.get('lang', 'kz')
+    stage = d.get('stage', 'start')
+    pack = d.get('pack', '1_kanal')
+    history = d.setdefault('history', [])
+    reply_kb = get_main_kb(lang)
+    
+    track_user_action(user_id, "message_sent")
+    d['command_count'] = d.get('command_count', 0) + 1
+    
+    # Check for price negotiation keywords
+    price_keywords = ['скидка', 'дешевле', 'дорого', 'денег нет', 'акция', 'бонус', 'скидк', 'жеңілдік', 'арзан', 'қымбат', 'ақшам жоқ']
+    if any(kw in message.text.lower() for kw in price_keywords) and stage == 'wait_2':
+        await message.answer(
+            "😏 Жаным, бұл қазірдің өзінде скидка!\n\n"
+            "Егер шынымен қиын болса, қанша сала аласың?\n"
+            "Айт, көрейік 💋" if lang == 'kz'
+            else "😏 Зай, это уже со скидкой!\n\n"
+            "Если совсем тяжело, сколько можешь скинуть?\n"
+            "Скажи, посмотрим 💋"
+        )
+        return
+    
+    # Channel content triggers
+    triggers = ["не бар", "не кіреді", "қандай", "кандай", "ішінде", "ышынде",
+                "что внутри", "какие каналы", "что входит", "внутри", "нелер бар", 
+                "покажи", "контент", "видео", "фото"]
+    
+    if stage not in ('wait_2', 'done', 'wait_vip') and any(w in message.text.lower() for w in triggers):
+        lines = "\n".join([f"🔥 {v['name']} — {fmt(v['price'])} тг" for v in CHANNELS.values()])
+        if lang == 'kz':
+            text = (f"✨ *Іште не бар?* ✨\n\n"
+                    f"{lines}\n\n"
+                    f"👇 Қазір төле, бірден кір! 💋")
+        else:
+            text = (f"✨ *Что внутри?* ✨\n\n"
+                    f"{lines}\n\n"
+                    f"👇 Оплачивай сейчас и заходи! 💋")
+        
+        await message.answer(text, parse_mode="Markdown", reply_markup=reply_kb)
+        return
+    
+    # Build dynamic context
+    comm = "1 777" if pack == '8_kanal' else "1 555"
+    lang_rule = ("ҚАЗАҚША сөйле. 'Жаным', 'Күнім' де." if lang == 'kz'
+                 else "Говори строго НА РУССКОМ. 'Зай', 'Милый' де.")
+    
+    if stage == 'done':
+        dynamic = "Клиент төледі. Ештеңе сатпа. Еркін флиртпен сөйлес, дос болып қал."
+        reply_kb = None
+    elif stage == 'wait_vip':
+        dynamic = "Клиент VIP ОБЗОР чекін күтуде. Жылы сөзбен шақыр, шыдамды бол."
+        reply_kb = None
+    elif stage == 'wait_2':
+        if lang == 'kz':
+            dynamic = (f"ЕКІНШІ ТӨЛЕМ ({comm} тг) күтілуде. "
+                       f"Скидка десе: 'Бұл қазірдің өзінде скидка'. "
+                       f"Ақшам жоқ десе: 'Қанша сала аласың?' деп сұра. "
+                       f"Нақты сома айтса: [АДМИН] деп қос. "
+                       f"Манипуляция жаса: 'Барлығы осылай өтті', 'Бүгін соңғы күн'.")
+        else:
+            dynamic = (f"ЖДЕМ ВТОРОЙ ПЛАТЕЖ ({comm} тг). "
+                       f"Скидка: 'Это уже со скидкой'. "
+                       f"Нет денег: 'Сколько можешь скинуть?'. "
+                       f"Конкретная сумма: добавь [АДМИН]. "
+                       f"Манипулируй: 'Все так проходят', 'Сегодня последний день'.")
+        reply_kb = None
+    else:
+        dynamic = ("Екінші төлем туралы сұраса — мүлдем жоқ де."
+                   if lang == 'kz' else
+                   "Про второй платеж — скажи что нет.")
+    
+    full_prompt = f"{SYSTEM_PROMPT} {lang_rule}\nМАҢЫЗДЫ: {dynamic}"
+    
+    # Send "Thinking..." message
+    thinking_msg = await message.answer(
+        "💭 Ойланып жатырмын..." if lang == 'kz' else "💭 Думаю..."
+    )
+    
+    # Call Gemini API
+    response = await call_gemini(full_prompt, message.text, history)
+    
+    # Delete "Thinking..." message
+    try:
+        await thinking_msg.delete()
+    except Exception:
+        pass
+    
+    if response:
+        # Update conversation history
+        history.append({"role": "user", "content": message.text})
+        history.append({"role": "assistant", "content": response})
+        
+        # Keep only last 15 messages
+        if len(history) > 15:
+            d['history'] = history[-15:]
+        
+        # Check if admin approval needed for discount
+        if "[АДМИН]" in response:
+            response = response.replace("[АДМИН]", "").strip()
+            akb = InlineKeyboardBuilder()
+            akb.add(types.InlineKeyboardButton(text="✅ Иә / Да", callback_data=f"offeryes_{user_id}"))
+            akb.add(types.InlineKeyboardButton(text="❌ Жоқ / Нет", callback_data=f"offerno_{user_id}"))
+            
+            await bot.send_message(
+                ADMIN_ID,
+                f"🔔 *СКИДКА СҰРАУ*\n\n"
+                f"👤 ID: `{user_id}`\n"
+                f"👤 Username: @{message.from_user.username or 'None'}\n"
+                f"💬 Сообщение: {message.text[:200]}\n\n"
+                f"💰 Пакет: {d.get('pack', 'unknown')}\n"
+                f"📊 Этап: {stage}",
+                parse_mode="Markdown",
+                reply_markup=akb.as_markup()
+            )
+            logger.info(f"[ADMIN] Discount request from user {user_id}")
+        
         # Send AI response
         try:
             await message.answer(response, reply_markup=reply_kb)
@@ -1305,6 +1439,11 @@ async def ai_handler(message: types.Message):
             logger.error(f"[AI] Error sending response: {e}")
             fallback = get_fallback_response(lang)
             await message.answer(fallback, reply_markup=reply_kb)
+    else:
+        # Fallback if AI fails
+        logger.warning(f"[AI] AI failed for user {user_id}, using fallback")
+        fallback = get_fallback_response(lang)
+        await message.answer(fallback, reply_markup=reply_kb)
 
 # ─── ADDITIONAL COMMANDS AND HANDLERS ─────────────────────────────────────────
 
@@ -1358,7 +1497,6 @@ async def cmd_profile(message: types.Message):
     lang = ud(user_id).get('lang', 'kz')
     stats = get_user_stats(user_id)
     
-    # Calculate time since first seen
     first_seen = datetime.fromisoformat(stats['first_seen']) if stats['first_seen'] else datetime.now()
     days_since = (datetime.now() - first_seen).days
     
@@ -1372,7 +1510,7 @@ async def cmd_profile(message: types.Message):
             f"🔞 VIP ОБЗОР: {'Иә' if stats['has_vip'] else 'Жоқ'}\n"
             f"👥 Рефералдар: {stats['referrals']}\n"
             f"📍 Этап: {stats['current_stage']}\n\n"
-            f"🎯 *Мақсат:* {REFERRAL_GOAL - stats['referrals']} реферал қалды тегін канал үшін!"
+            f"🎯 *Мақсат:* {REFERRAL_GOAL - stats['referrals']} реферал қалды!"
         )
     else:
         text = (
@@ -1384,7 +1522,7 @@ async def cmd_profile(message: types.Message):
             f"🔞 VIP ОБЗОР: {'Да' if stats['has_vip'] else 'Нет'}\n"
             f"👥 Рефералов: {stats['referrals']}\n"
             f"📍 Этап: {stats['current_stage']}\n\n"
-            f"🎯 *Цель:* {REFERRAL_GOAL - stats['referrals']} рефералов до бесплатного канала!"
+            f"🎯 *Цель:* {REFERRAL_GOAL - stats['referrals']} рефералов осталось!"
         )
     
     await message.answer(text, parse_mode="Markdown")
@@ -1405,7 +1543,7 @@ async def cmd_support(message: types.Message):
             "• Қалай төлеу керек? → /help\n"
             "• Тегін канал қалай алуға болады? → /help\n"
             "• Чекті қайда жіберу керек? → Төлемнен кейін осы чатқа\n\n"
-            "💬 *Сұрағыңызды жазыңыз, біз көмектесеміз!*"
+            "💬 *Сұрағыңызды жазыңыз!*"
         )
     else:
         text = (
@@ -1417,51 +1555,10 @@ async def cmd_support(message: types.Message):
             "• Как оплатить? → /help\n"
             "• Как получить бесплатный канал? → /help\n"
             "• Куда отправлять чек? → После оплаты в этот чат\n\n"
-            "💬 *Напишите ваш вопрос, мы поможем!*"
+            "💬 *Напишите ваш вопрос!*"
         )
     
     await message.answer(text, parse_mode="Markdown")
-
-@dp.message(Command("stats"))
-async def cmd_stats(message: types.Message):
-    """Show bot statistics (admin only)."""
-    if message.from_user.id != ADMIN_ID:
-        await message.answer("⛔ Доступ запрещен")
-        return
-    
-    report = get_analytics_report()
-    await message.answer(report, parse_mode="Markdown")
-
-@dp.message(Command("broadcast"))
-async def cmd_broadcast(message: types.Message):
-    """Broadcast message to all users (admin only)."""
-    if message.from_user.id != ADMIN_ID:
-        await message.answer("⛔ Доступ запрещен")
-        return
-    
-    # Check if message has text to broadcast
-    if not message.reply_to_message or not message.reply_to_message.text:
-        await message.answer("ℹ️ Ответьте на сообщение, которое хотите разослать, командой /broadcast")
-        return
-    
-    broadcast_text = message.reply_to_message.text
-    users_to_send = list(user_data.keys())
-    
-    success_count = 0
-    fail_count = 0
-    
-    await message.answer(f"📢 Начинаю рассылку {len(users_to_send)} пользователям...")
-    
-    for user_id in users_to_send:
-        try:
-            await bot.send_message(user_id, broadcast_text, parse_mode="Markdown")
-            success_count += 1
-            await asyncio.sleep(0.05)  # Avoid hitting rate limits
-        except Exception as e:
-            fail_count += 1
-            logger.error(f"[BROADCAST] Failed to send to {user_id}: {e}")
-    
-    await message.answer(f"✅ Рассылка завершена!\n\n✅ Успешно: {success_count}\n❌ Ошибок: {fail_count}")
 
 # ─── ERROR HANDLERS ───────────────────────────────────────────────────────────
 
@@ -1470,14 +1567,12 @@ async def error_handler(update: types.Update, exception: Exception):
     """Global error handler for the bot."""
     logger.error(f"[ERROR] Update: {update}, Exception: {exception}", exc_info=True)
     
-    # Notify admin about critical errors
     if ADMIN_ID:
         try:
             error_message = (
                 f"⚠️ *Ошибка в боте!*\n\n"
                 f"📌 Тип: {type(exception).__name__}\n"
-                f"💬 Сообщение: {str(exception)[:200]}\n"
-                f"🆔 Update: {update.update_id if update else 'Unknown'}"
+                f"💬 Сообщение: {str(exception)[:200]}"
             )
             await bot.send_message(ADMIN_ID, error_message, parse_mode="Markdown")
         except Exception as e:
@@ -1490,7 +1585,7 @@ async def error_handler(update: types.Update, exception: Exception):
 async def clean_old_data():
     """Clean old user data periodically."""
     while True:
-        await asyncio.sleep(3600)  # Run every hour
+        await asyncio.sleep(3600)
         
         try:
             now = datetime.now()
@@ -1500,7 +1595,6 @@ async def clean_old_data():
                 last_active = data.get('last_active')
                 if last_active:
                     last_time = datetime.fromisoformat(last_active)
-                    # Delete users inactive for more than 30 days
                     if (now - last_time).days > 30:
                         to_delete.append(user_id)
             
@@ -1510,99 +1604,47 @@ async def clean_old_data():
                 if user_id in user_messages:
                     del user_messages[user_id]
                 logger.info(f"[CLEAN] Removed inactive user {user_id}")
-            
-            if to_delete:
-                logger.info(f"[CLEAN] Cleaned {len(to_delete)} inactive users")
                 
         except Exception as e:
-            logger.error(f"[CLEAN] Error in clean_old_data: {e}")
-
-async def backup_data():
-    """Backup user data periodically."""
-    while True:
-        await asyncio.sleep(86400)  # Run every day
-        
-        try:
-            backup_file = f"backup_{datetime.now().strftime('%Y%m%d')}.json"
-            backup_data = {
-                "user_data": {str(k): v for k, v in user_data.items()},
-                "paid_users": list(paid_users),
-                "vip_obzor_users": list(vip_obzor_users),
-                "referral_data": {str(k): list(v) for k, v in referral_data.items()},
-                "timestamp": datetime.now().isoformat()
-            }
-            
-            with open(backup_file, 'w', encoding='utf-8') as f:
-                json.dump(backup_data, f, ensure_ascii=False, indent=2)
-            
-            logger.info(f"[BACKUP] Created backup: {backup_file}")
-            
-            # Keep only last 7 backups
-            import glob
-            backups = sorted(glob.glob("backup_*.json"))
-            for old_backup in backups[:-7]:
-                os.remove(old_backup)
-                logger.info(f"[BACKUP] Removed old backup: {old_backup}")
-                
-        except Exception as e:
-            logger.error(f"[BACKUP] Error in backup_data: {e}")
+            logger.error(f"[CLEAN] Error: {e}")
 
 async def update_analytics():
     """Update analytics data periodically."""
     while True:
-        await asyncio.sleep(3600)  # Run every hour
+        await asyncio.sleep(3600)
         
         try:
             total_users = len(user_data)
             total_paid = len(paid_users)
             total_sales = calculate_total_sales()
             
-            logger.info(f"[ANALYTICS] Hourly stats - Users: {total_users}, Paid: {total_paid}, Sales: {total_sales} тг")
-            
-            # Save to file
-            stats_file = f"analytics_{datetime.now().strftime('%Y%m%d')}.json"
-            stats_data = {
-                "date": datetime.now().isoformat(),
-                "total_users": total_users,
-                "total_paid": total_paid,
-                "total_vip": len(vip_obzor_users),
-                "total_sales": total_sales,
-                "avg_check": total_sales // (total_paid + len(vip_obzor_users) or 1)
-            }
-            
-            # Append to daily log
-            with open(stats_file, 'a', encoding='utf-8') as f:
-                f.write(json.dumps(stats_data, ensure_ascii=False) + "\n")
-                
+            logger.info(f"[ANALYTICS] Users: {total_users}, Paid: {total_paid}, Sales: {total_sales} тг")
         except Exception as e:
-            logger.error(f"[ANALYTICS] Error in update_analytics: {e}")
+            logger.error(f"[ANALYTICS] Error: {e}")
 
 # ─── MAIN FUNCTION ────────────────────────────────────────────────────────────
 
 async def main():
     """Main function to start the bot."""
-    # Print startup banner
     logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     logger.info("  АЙСҰЛУ БОТ ІСКЕ ҚОСЫЛДЫ ✅")
     logger.info("  Flask keep-alive: http://0.0.0.0:8000/")
     logger.info("  Gemini Model: gemini-1.5-flash")
-    logger.info(f"  Bot username: {(await bot.get_me()).username}")
+    bot_me = await bot.get_me()
+    logger.info(f"  Bot username: {bot_me.username}")
     logger.info(f"  Total channels: {len(CHANNELS)}")
-    logger.info(f"  Admin ID: {ADMIN_ID}")
     logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     
     # Start background tasks
     asyncio.create_task(self_ping_loop())
-    asyncio.create_task(fake_activity_loop(bot))
     asyncio.create_task(clean_old_data())
-    asyncio.create_task(backup_data())
     asyncio.create_task(update_analytics())
     
     # Set bot commands
     await bot.set_my_commands([
         types.BotCommand(command="start", description="🚀 Бастау / Старт"),
         types.BotCommand(command="help", description="🆘 Көмек / Помощь"),
-        types.BotCommand(command="profile", description="👤 Мой профиль / Мой профиль"),
+        types.BotCommand(command="profile", description="👤 Мой профиль"),
         types.BotCommand(command="support", description="📞 Қолдау / Поддержка"),
     ])
     
@@ -1610,25 +1652,22 @@ async def main():
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     except Exception as e:
-        logger.error(f"[MAIN] Fatal error in polling: {e}", exc_info=True)
+        logger.error(f"[MAIN] Fatal error: {e}", exc_info=True)
         raise
 
 # ─── ENTRY POINT ──────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    # Start Flask keep-alive server
     keep_alive()
     
-    # Run bot with proper error handling
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("Бот тоқтатылды! (Ctrl+C)")
+        logger.info("Бот тоқтатылды!")
     except SystemExit:
-        logger.info("Бот тоқтатылды! (SystemExit)")
+        logger.info("Бот тоқтатылды!")
     except Exception as e:
         logger.error(f"Бот қатемен тоқтады: {e}", exc_info=True)
         raise
     finally:
-        # Cleanup
-        logger.info("Бот жұмысын аяқтады. До свидания! 👋")
+        logger.info("Бот жұмысын аяқтады. 👋")
